@@ -53,10 +53,14 @@ public final class TeamCode {
     public void addListener(Consumer<Build> l) { listeners.add(l); }
 
     public List<File> sourceFiles() {
-        List<File> files = new ArrayList<>();
-        for (File root : repo.sourceRoots) files.addAll(TeamRepo.collect(root, ".java"));
-        if (includeSamples && repo.samplesRoot.isDirectory()) files.addAll(TeamRepo.collect(repo.samplesRoot, ".java"));
-        return files;
+        // a loose OpMode folder may sit inside the project's source root: compile every file once
+        Map<String, File> files = new LinkedHashMap<>();
+        List<File> roots = new ArrayList<>(repo.sourceRoots);
+        if (includeSamples && repo.samplesRoot.isDirectory()) roots.add(repo.samplesRoot);
+        for (File root : roots) {
+            for (File f : TeamRepo.collect(root, ".java")) files.putIfAbsent(f.toPath().toAbsolutePath().normalize().toString(), f);
+        }
+        return new ArrayList<>(files.values());
     }
 
     /** Compiles and loads the team code; never throws. */
@@ -142,13 +146,20 @@ public final class TeamCode {
                     }
                     key.reset();
                 }
-            } catch (IOException | InterruptedException | RuntimeException e) {
+            } catch (InterruptedException e) {
+                // stopWatching(): the folder is being replaced
+            } catch (IOException | RuntimeException e) {
                 RobotLog.ww(TAG, "source watcher stopped: %s", e.toString());
             }
         }, "ftcsim-source-watcher");
         t.setDaemon(true);
         watcher = t;
         t.start();
+    }
+
+    /** Stops watching the source roots (the team code is being replaced by another folder). */
+    public synchronized void stopWatching() {
+        if (watcher != null) { watcher.interrupt(); watcher = null; }
     }
 
     private static void registerAll(Path root, WatchService ws) throws IOException {

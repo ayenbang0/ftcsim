@@ -96,6 +96,7 @@ public final class SimHardware {
         c.mass = config.massKg;
         c.length = Units.inToM(config.lengthIn);
         c.width = Units.inToM(config.widthIn);
+        c.height = Units.inToM(config.heightIn > 0 ? config.heightIn : 18);
         c.computeInertia();
         c.wheelRadius = Units.inToM(d.wheelDiameterIn) / 2;
         c.halfTrackWidth = Units.inToM(d.trackWidthIn) / 2;

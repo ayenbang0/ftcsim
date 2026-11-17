@@ -8,3 +8,6 @@ ftcsim.properties
 /configs/*.local.json
 /local.properties
 tools/node_modules
+*.stl
+BIOBUZZ_Competition_Manual*.pdf
+dist/

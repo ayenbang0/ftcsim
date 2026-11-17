@@ -23,6 +23,8 @@ public class RobotConfig {
     public String notes = "";
     public double lengthIn = 18;
     public double widthIn = 18;
+    /** Chassis height, inches: game elements below this height collide with the robot body. */
+    public double heightIn = 18;
     public double massKg = 12;
     public double batteryVolts = 12.8;
     public double batteryResistanceOhms = 0.06;
@@ -42,6 +44,8 @@ public class RobotConfig {
     public Drivetrain drivetrain = new Drivetrain();
     public List<Hub> hubs = new ArrayList<>();
     public List<Device> devices = new ArrayList<>();
+    /** BIOBUZZ mechanisms (intake/launcher); defaults auto-detect motors and servos by name. */
+    public Game game = new Game();
 
     public static class Latency {
         public boolean enabled = true;
@@ -53,6 +57,54 @@ public class RobotConfig {
         public double readMs = 2.0;
         /** One I2C transaction: Pinpoint, OTOS, colour/distance sensors, the hub IMU. */
         public double i2cMs = 2.5;
+    }
+
+    /** Maps the robot's own mechanisms onto the game model. Every field is optional. */
+    public static class Game {
+        /** Elements the robot can hold at once (the field manual lets a robot start with 4 preloaded POLLEN). */
+        public int capacity = 4;
+        /** HIVE CELL load (POLLEN = 1.0, NECTAR = 1.3) that makes the HIVE tip. The manual does not publish the real threshold. */
+        public double hiveTipLoad = 7.0;
+        public Intake intake = new Intake();
+        public Launcher launcher = new Launcher();
+    }
+
+    public static class Intake {
+        public boolean enabled = true;
+        /** Motor names that run the intake; empty = pick by name (intake, collect, roller, sweep, ingest). */
+        public List<String> motors = new ArrayList<>();
+        /** Continuous-rotation servo names that run the intake. */
+        public List<String> servos = new ArrayList<>();
+        public double minPower = 0.2;
+        /** 0 = either direction pulls elements in; +1 / -1 = only that sign of motor power (or servo offset from 0.5). */
+        public int direction = 0;
+        /** Mouth start relative to the chassis front edge (inches, negative = inside the chassis) and its depth. */
+        public double forwardIn = -2, depthIn = 4;
+        /** Mouth width; 0 = chassis width minus one inch. */
+        public double widthIn = 0;
+    }
+
+    public static class Launcher {
+        public boolean enabled = true;
+        /** Flywheel motor names; empty = pick by name (shoot, launch, fly, shooter, flywheel). */
+        public List<String> flywheels = new ArrayList<>();
+        /** Feeder motor or servo names; empty = pick by name (feed, kick, index, transfer, gate, push). */
+        public List<String> feeders = new ArrayList<>();
+        public double minPower = 0.2;
+        /** Exit speed = flywheel surface speed (omega x radius) x efficiency. */
+        public double wheelRadiusIn = 2.0;
+        public double efficiency = 0.35;
+        public double pitchDeg = 55;
+        public double muzzleForwardIn = 6, muzzleLeftIn = 0, muzzleHeightIn = 12;
+        public double yawDeg = 0;
+        public double spreadDeg = 1.2;
+        /** Below this exit speed a feeder pulse just drops the element at the muzzle. */
+        public double minSpeedInPerSec = 120;
+        public double cooldownS = 0.25;
+        /** A positional feeder servo fires when it rises through this position. */
+        public double feederServoAbove = 0.5;
+        /** Exit speed used by the manual launch button when no flywheel is configured. */
+        public double manualSpeedInPerSec = 330;
     }
 
     public static class StartPose {
@@ -169,6 +221,13 @@ public class RobotConfig {
         if (c.devices == null) c.devices = new ArrayList<>();
         if (c.drivetrain == null) c.drivetrain = new Drivetrain();
         if (c.startPose == null) c.startPose = new StartPose();
+        if (c.game == null) c.game = new Game();
+        if (c.game.intake == null) c.game.intake = new Intake();
+        if (c.game.launcher == null) c.game.launcher = new Launcher();
+        if (c.game.intake.motors == null) c.game.intake.motors = new ArrayList<>();
+        if (c.game.intake.servos == null) c.game.intake.servos = new ArrayList<>();
+        if (c.game.launcher.flywheels == null) c.game.launcher.flywheels = new ArrayList<>();
+        if (c.game.launcher.feeders == null) c.game.launcher.feeders = new ArrayList<>();
         if (c.hubs.isEmpty()) c.hubs.add(new Hub("Control Hub", 173, true));
         for (Device d : c.devices) if (d.params == null) d.params = new LinkedHashMap<>();
         return c;

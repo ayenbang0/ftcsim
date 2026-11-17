@@ -29,8 +29,8 @@ public class BioBuzzFieldTest {
         assertEquals(30, redUp.pitchDeg, 1e-9, "the arm is tilted 30 degrees");
         assertEquals(-30, redDown.pitchDeg, 1e-9);
         assertTrue(redUp.x > 0, "the red audience CELL is on the audience (+X) side");
-        assertEquals(-12.75, redUp.y, 1e-9, "the red HIVE pivot is 12.75 in from the centre");
-        assertEquals(12.75, cluster(f, "BLUE SCORING").y, 1e-9);
+        assertEquals(-12.75, redUp.y, 0.02, "the red HIVE pivot is about 12.75 in from the centre (scanned: 12.743)");
+        assertEquals(12.75, cluster(f, "BLUE SCORING").y, 0.02);
         // the raised CELL mouth runs from 53.5 in to 65.6 in (manual values), so its centre - the cluster
         // origin the SDK puts "in the centre of the Cell opening" - is at 59.55 in
         assertEquals((53.5 + 65.6) / 2, redUp.z, 0.2, "the raised CELL opening centre");

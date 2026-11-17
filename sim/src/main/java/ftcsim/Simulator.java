@@ -9,6 +9,8 @@ import com.qualcomm.robotcore.util.RobotLog;
 import ftcsim.bridge.Configurables;
 import ftcsim.bridge.DashboardBridge;
 import ftcsim.config.RobotConfig;
+import ftcsim.game.BiobuzzGame;
+import ftcsim.game.MatchControl;
 import ftcsim.hardware.SimHardware;
 import ftcsim.log.SimLog;
 import ftcsim.log.StdoutCapture;
@@ -38,6 +40,16 @@ public final class Simulator {
         public File home = new File(System.getProperty("ftcsim.home", "."));
         public File dataDir;
         public File webOverrideDir;
+        /** A plain folder of OpMode sources (Autonomous and/or TeleOp) to compile and run; no FtcRobotController project needed. */
+        public File autos;
+        /** Game field map: a CAD export (.stl) or a compiled map (.json). Default: the built-in BIOBUZZ map. */
+        public File map;
+        /** Headless: run every Autonomous OpMode once on the field, print the score and exit. */
+        public boolean batch;
+        /** Batch report file (.json or .md). */
+        public File report;
+        /** True inside the packaged desktop app: native dialogs (folder chooser) are available. */
+        public boolean desktop;
     }
 
     private final Options opts;
@@ -47,7 +59,7 @@ public final class Simulator {
     private World world;
     private SimHardware hardware;
     private SimOpModeRunner runner;
-    private TeamCode teamCode;
+    private volatile TeamCode teamCode;
     private WebServer web;
     private final Configurables configurables = new Configurables();
     private volatile int obeliskTag = 21;
@@ -57,6 +69,12 @@ public final class Simulator {
     private volatile long lastLogSeq;
     private volatile List<OpModeEntry> opModes = new ArrayList<>();
     private volatile long startedAt;
+    private BiobuzzGame game;
+    private MatchControl match;
+    private File dataDir;
+    private volatile File autosFolder;
+    private static final int MAX_RECENT = 8;
+    private final List<String> recentFolders = new ArrayList<>();
 
     public Simulator(Options opts) { this.opts = opts; }
 
@@ -66,24 +84,34 @@ public final class Simulator {
     public TeamCode teamCode() { return teamCode; }
     public RobotConfig config() { return config; }
     public WebServer web() { return web; }
+    /** The BIOBUZZ game engine; null on fields without one. */
+    public BiobuzzGame game() { return game; }
+    /** Runs Autonomous then TeleOp as a timed match; null on fields without a game. */
+    public MatchControl match() { return match; }
 
     // ------------------------------------------------------------------ startup
     public void start() throws IOException {
         startedAt = System.currentTimeMillis();
         File data = opts.dataDir != null ? opts.dataDir : new File(opts.home, "build/ftcsim-data");
         data.mkdirs();
+        dataDir = data;
         System.setProperty("ftcsim.data", data.getAbsolutePath());
         android.content.Context.setFilesDir(new File(data, "files"));
         StdoutCapture.install();
         android.util.Log.setSink((priority, tag, msg, tr) -> SimLog.log(priority <= 2 ? SimLog.Level.VERBOSE : priority == 3 ? SimLog.Level.DEBUG : priority == 4 ? SimLog.Level.INFO : priority == 5 ? SimLog.Level.WARN : SimLog.Level.ERROR, tag, msg, tr));
 
-        TeamRepo repo = opts.repo == null ? null : new TeamRepo(opts.repo);
-        if (repo != null) System.setProperty("ftcsim.sdkVersion", repo.sdkVersion);
+        TeamRepo repo = opts.repo == null && opts.autos == null ? null : TeamRepo.of(opts.repo, opts.autos);
+        loadRecentFolders();
+        if (opts.autos != null) {
+            autosFolder = opts.autos.getAbsoluteFile();
+            if (!opts.batch) rememberFolder(autosFolder);
+        }
+        if (repo != null && repo.project) System.setProperty("ftcsim.sdkVersion", repo.sdkVersion);
         config = loadConfig(repo);
         RobotLog.ii(TAG, "Robot configuration: %s (%s)", config.name, configFile);
 
         world = new World();
-        world.field = Field.byName(config.field);
+        world.field = Field.byName(config.field, resolveMap(data));
         obeliskTag = obeliskFrom(world.field);
         ftcsim.hardware.HardwareBus.install(world);
         ftcsim.hardware.HardwareBus.configure(config.hardwareLatency.enabled, config.hardwareLatency.bulkReadMs,
@@ -91,25 +119,21 @@ public final class Simulator {
         hardware = new SimHardware(world, config, () -> world.field, () -> obeliskTag);
         runner = new SimOpModeRunner(hardware.hardwareMap, this::beforeInit, this::afterStop);
         hardware.snapAllowed = () -> runner.state() == SimOpModeRunner.State.INIT || runner.state() == SimOpModeRunner.State.IDLE;
-        runner.addStateListener(s -> { if (s == SimOpModeRunner.State.RUNNING && matchTimerEnabled) armMatchTimer(); });
+        if (world.field.map != null) {
+            game = new BiobuzzGame(world, config);
+            game.attach();
+            match = new MatchControl(runner, game, this::resetRobotToStart);
+            match.start();
+        }
+        runner.addStateListener(this::onRunnerState);
         world.start();
 
-        if (repo != null) {
-            String classpath = System.getProperty("java.class.path");
-            teamCode = new TeamCode(repo, new File(data, "teamcode"), classpath, opts.includeSamples, opts.prebuilt);
-            teamCode.addListener(b -> {
-                opModes = b.opModes;
-                configurables.setClasses(b.allClasses);
-                broadcastOpModes();
-            });
-            Thread builder = new Thread(() -> { teamCode.build(); teamCode.startWatching(); }, "ftcsim-initial-build");
-            builder.setDaemon(true);
-            builder.start();
-        } else {
-            RobotLog.ww(TAG, "No team repository configured: start FTCSim with --repo <path to your FtcRobotController project>");
-        }
+        if (repo != null) useTeamCode(repo, !opts.batch);
+        else RobotLog.ww(TAG, "No OpMode source configured: start FTCSim with --autos <folder of OpModes> or --repo <path to your FtcRobotController project>");
 
+        if (opts.batch) return; // headless: BatchRunner drives the match, there is no UI
         web = new WebServer(opts.port, "/web", opts.webOverrideDir, this::onMessage);
+        web.setLoopbackOnly(opts.desktop);
         web.addApi("/api/", this::api);
         web.start();
         String url = "http://localhost:" + web.port() + "/";
@@ -124,7 +148,7 @@ public final class Simulator {
     private RobotConfig loadConfig(TeamRepo repo) throws IOException {
         File f = opts.config;
         if (f == null) {
-            String name = repo == null ? "default" : repo.dir.getName();
+            String name = repo == null || !repo.project ? "Biobuzz" : repo.dir.getName();
             File configs = new File(opts.home, "configs");
             f = new File(configs, name + ".json");
             // prefer an existing file that matches the repository name ignoring case (Decode.json for .../decode)
@@ -178,6 +202,127 @@ public final class Simulator {
         matchDeadline = System.currentTimeMillis() + seconds * 1000;
     }
 
+    /** The game clock starts when the OpMode starts: an Autonomous begins AUTO, a TeleOp begins TELEOP (after AUTO, or straight away as practice). */
+    private void onRunnerState(SimOpModeRunner.State s) {
+        if (s != SimOpModeRunner.State.RUNNING) return;
+        if (game == null) {
+            if (matchTimerEnabled) armMatchTimer();
+            return;
+        }
+        OpModeEntry e = runner.entry();
+        if (e != null && e.flavor == OpModeEntry.Flavor.AUTONOMOUS) game.beginAuto(); else game.beginTeleop();
+    }
+
+    /** Puts the robot back on its starting pose (from the robot configuration) with every motor stopped. */
+    private void resetRobotToStart() {
+        RobotConfig.StartPose p = config.startPose;
+        world.chassis.setPose(new Pose2(Units.inToM(p.x), Units.inToM(p.y), Math.toRadians(p.headingDeg)));
+        poseEpoch++;
+        ftcsim.hardware.HardwareBus.exempt(() -> hardware.stopAllMotors());
+    }
+
+    /** Compiles and loads the OpModes of {@code repo}, replacing the ones loaded before. With {@code background} the compile runs on its own thread and the sources are watched for changes. */
+    private synchronized void useTeamCode(TeamRepo repo, boolean background) {
+        if (teamCode != null) teamCode.stopWatching();
+        String key = repo.dir.getAbsolutePath() + "|" + (repo.folder == null ? "" : repo.folder.getAbsolutePath());
+        File buildDir = new File(dataDir, "teamcode/" + Integer.toHexString(key.hashCode()));
+        TeamCode tc = new TeamCode(repo, buildDir, System.getProperty("java.class.path"), opts.includeSamples, opts.prebuilt);
+        teamCode = tc;
+        opModes = new ArrayList<>();
+        tc.addListener(b -> {
+            if (tc != teamCode) return;
+            opModes = b.opModes;
+            configurables.setClasses(b.allClasses);
+            broadcastOpModes();
+        });
+        if (!background) { tc.build(); return; }
+        Thread builder = new Thread(() -> { tc.build(); if (tc == teamCode) tc.startWatching(); }, "ftcsim-initial-build");
+        builder.setDaemon(true);
+        builder.start();
+    }
+
+    /** The UI chose a folder of OpModes (or a project): load it. */
+    private void setAutosFolder(WebServer.Client client, String path) {
+        String p = path == null ? "" : path.trim();
+        if (p.length() > 1 && p.startsWith("\"") && p.endsWith("\"")) p = p.substring(1, p.length() - 1);
+        if (p.isEmpty()) { toast(client, "error", "Enter the path of a folder of OpModes"); return; }
+        File dir = new File(p).getAbsoluteFile();
+        if (!dir.isDirectory()) { toast(client, "error", "Not a folder: " + dir); return; }
+        if (match != null) match.abort(); else new Thread(runner::stop, "ftcsim-ui-stop").start();
+        TeamRepo repo = TeamRepo.isProject(dir) ? TeamRepo.of(dir, null) : TeamRepo.of(opts.repo, dir);
+        autosFolder = dir;
+        rememberFolder(dir);
+        RobotLog.ii(TAG, "OpMode folder: %s", dir);
+        useTeamCode(repo, true);
+        broadcastOpModes();
+        toast(client, "info", "Loading OpModes from " + dir);
+    }
+
+    private void browseAutosFolder(WebServer.Client client) {
+        if (!opts.desktop || java.awt.GraphicsEnvironment.isHeadless()) {
+            toast(client, "info", "The folder dialog is only available in the FTCSim app: type the folder path instead");
+            return;
+        }
+        Thread t = new Thread(() -> {
+            File chosen = chooseFolder(autosFolder);
+            if (chosen != null) setAutosFolder(client, chosen.getAbsolutePath());
+        }, "ftcsim-folder-dialog");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** A native-looking folder chooser shown above the app window; null when cancelled. */
+    private static File chooseFolder(File start) {
+        File[] chosen = new File[1];
+        try {
+            javax.swing.SwingUtilities.invokeAndWait(() -> {
+                try { javax.swing.UIManager.setLookAndFeel(javax.swing.UIManager.getSystemLookAndFeelClassName()); } catch (Exception ignored) {}
+                javax.swing.JFileChooser fc = new javax.swing.JFileChooser(start) {
+                    @Override protected javax.swing.JDialog createDialog(java.awt.Component parent) {
+                        javax.swing.JDialog d = super.createDialog(parent);
+                        d.setAlwaysOnTop(true);
+                        return d;
+                    }
+                };
+                fc.setDialogTitle("Choose the folder of OpModes (Autonomous / TeleOp .java files)");
+                fc.setApproveButtonText("Use this folder");
+                fc.setFileSelectionMode(javax.swing.JFileChooser.DIRECTORIES_ONLY);
+                if (fc.showOpenDialog(null) == javax.swing.JFileChooser.APPROVE_OPTION) chosen[0] = fc.getSelectedFile();
+            });
+        } catch (Exception e) {
+            RobotLog.ww(TAG, "Folder dialog failed: %s", e);
+        }
+        return chosen[0];
+    }
+
+    private void loadRecentFolders() {
+        File f = new File(dataDir, "recent-autos.txt");
+        synchronized (recentFolders) {
+            recentFolders.clear();
+            try {
+                if (f.isFile()) for (String line : java.nio.file.Files.readAllLines(f.toPath(), java.nio.charset.StandardCharsets.UTF_8)) {
+                    String p = line.trim();
+                    if (!p.isEmpty() && new File(p).isDirectory() && !recentFolders.contains(p)) recentFolders.add(p);
+                }
+            } catch (IOException e) { RobotLog.ww(TAG, "Could not read %s: %s", f, e); }
+        }
+    }
+
+    private void rememberFolder(File dir) {
+        synchronized (recentFolders) {
+            String p = dir.getAbsolutePath();
+            recentFolders.remove(p);
+            recentFolders.add(0, p);
+            while (recentFolders.size() > MAX_RECENT) recentFolders.remove(recentFolders.size() - 1);
+            try { java.nio.file.Files.write(new File(dataDir, "recent-autos.txt").toPath(), recentFolders, java.nio.charset.StandardCharsets.UTF_8); }
+            catch (IOException e) { RobotLog.ww(TAG, "Could not save the recent folders: %s", e); }
+        }
+    }
+
+    private List<String> recentFoldersCopy() {
+        synchronized (recentFolders) { return new ArrayList<>(recentFolders); }
+    }
+
     // ------------------------------------------------------------------ messages
     @SuppressWarnings("unchecked")
     private void onMessage(WebServer.Client client, String text) {
@@ -190,7 +335,10 @@ public final class Simulator {
                     int id = (int) num(msg.get("id"), 1);
                     SimGamepad gp = id == 2 ? runner.gamepad2() : runner.gamepad1();
                     Object state = msg.get("state");
-                    if (state instanceof Map) gp.apply((Map<String, Object>) state);
+                    if (state instanceof Map) {
+                        gp.apply((Map<String, Object>) state);
+                        if (game != null && driving((Map<String, Object>) state)) game.driverInput();
+                    }
                     break;
                 }
                 case "opmode.init": {
@@ -212,6 +360,7 @@ public final class Simulator {
                 case "sim.reset": {
                     world.chassis.setPose(new Pose2(Units.inToM(config.startPose.x), Units.inToM(config.startPose.y), Math.toRadians(config.startPose.headingDeg)));
                     poseEpoch++;
+                    if (game != null && !match.active() && (game.phase() == BiobuzzGame.Phase.PRE || game.phase() == BiobuzzGame.Phase.ENDED)) game.reset();
                     break;
                 }
                 case "sim.setStartPose": {
@@ -249,6 +398,7 @@ public final class Simulator {
                     String key = String.valueOf(msg.get("key")), value = String.valueOf(msg.get("value"));
                     if (world.field.setOption(key, value)) {
                         obeliskTag = obeliskFrom(world.field);
+                        if (game != null) game.adoptFieldSetup();
                         RobotLog.ii(TAG, "Field option %s = %s", key, value);
                         web.broadcast(gson.toJson(Map.of("type", "field", "field", fieldMessage())));
                     } else RobotLog.ww(TAG, "Unknown field option %s = %s", key, value);
@@ -262,6 +412,33 @@ public final class Simulator {
                     if (!ok) toast(client, "error", "Could not set " + msg.get("className") + "." + msg.get("path"));
                     break;
                 }
+                case "match.run": {
+                    if (match == null) { toast(client, "error", "Matches need the BIOBUZZ field (set \"field\": \"BIOBUZZ\" in the robot configuration)"); break; }
+                    String an = str(msg.get("auto")), tn = str(msg.get("teleop"));
+                    OpModeEntry a = an == null ? null : findStrict(an, OpModeEntry.Flavor.AUTONOMOUS);
+                    if (an != null && a == null) { toast(client, "error", "No Autonomous OpMode named " + an); break; }
+                    if (tn == null && !msg.containsKey("teleop") && a != null && a.preselectTeleOp != null && !a.preselectTeleOp.isEmpty()) tn = a.preselectTeleOp;
+                    OpModeEntry t = tn == null ? null : findStrict(tn, OpModeEntry.Flavor.TELEOP);
+                    if (tn != null && t == null) { toast(client, "error", "No TeleOp OpMode named " + tn); break; }
+                    if (a == null && t == null) { toast(client, "error", "Choose an Autonomous and/or a TeleOp OpMode to run"); break; }
+                    match.run(a, t);
+                    break;
+                }
+                case "match.abort": if (match != null) match.abort(); break;
+                case "game.reset": if (match != null) match.reset(); break;
+                case "game.settings":
+                    if (game != null) game.settings(str(msg.get("allianceMode")), msg.get("scriptedHuman") instanceof Boolean sh ? sh : null, msg.get("tipLoad") instanceof Number tl ? Double.valueOf(tl.doubleValue()) : null);
+                    break;
+                case "game.human": {
+                    String reply = game == null ? null : game.humanNectar();
+                    if (reply != null) toast(client, "info", reply);
+                    break;
+                }
+                case "game.manual":
+                    if (game != null) game.manual(msg.get("intake") instanceof Boolean on ? on : null, msg.get("launch") instanceof Boolean fire ? fire : null);
+                    break;
+                case "autos.set": setAutosFolder(client, str(msg.get("path"))); break;
+                case "autos.browse": browseAutosFolder(client); break;
                 case "config.get": client.send(gson.toJson(Map.of("type", "config", "json", config.toJson(), "file", configFile.getAbsolutePath()))); break;
                 case "config.save": {
                     RobotConfig c = RobotConfig.fromJson(String.valueOf(msg.get("json")));
@@ -290,7 +467,36 @@ public final class Simulator {
         return null;
     }
 
+    private OpModeEntry findStrict(String name, OpModeEntry.Flavor flavor) {
+        for (OpModeEntry e : opModes) if (e.name.equals(name) && e.flavor == flavor && !e.disabled) return e;
+        return null;
+    }
+
     private static double num(Object o, double def) { return o instanceof Number ? ((Number) o).doubleValue() : def; }
+
+    /** The text of a JSON value, or null when it is absent, empty or the string "null". */
+    private static String str(Object o) {
+        if (o == null) return null;
+        String s = String.valueOf(o).trim();
+        return s.isEmpty() || s.equals("null") ? null : s;
+    }
+
+    /** Gamepad input that counts as the drivers touching the controllers: a stick or trigger away from rest, or a button held. */
+    private static boolean driving(Map<String, Object> s) {
+        for (String k : new String[] {"lx", "ly", "rx", "ry", "lt", "rt"}) if (Math.abs(num(s.get(k), 0)) > 0.2) return true;
+        for (String k : new String[] {"a", "b", "x", "y", "lb", "rb", "ls", "rs", "du", "dd", "dl", "dr"}) {
+            Object v = s.get(k);
+            if (Boolean.TRUE.equals(v) || (v instanceof Number && ((Number) v).doubleValue() != 0)) return true;
+        }
+        return false;
+    }
+
+    /** Seconds left in the running period of a game snapshot, or null. */
+    private static Double periodRemaining(Map<String, Object> g) {
+        Object clock = g == null ? null : g.get("clock");
+        Object r = clock instanceof Map ? ((Map<?, ?>) clock).get("periodRemaining") : null;
+        return r instanceof Number ? Double.valueOf(((Number) r).doubleValue()) : null;
+    }
 
     private void toast(WebServer.Client c, String level, String text) { c.send(gson.toJson(Map.of("type", "toast", "level", level, "text", text))); }
 
@@ -314,9 +520,25 @@ public final class Simulator {
         m.put("field", fieldMessage());
         m.put("robot", Map.of("lengthIn", config.lengthIn, "widthIn", config.widthIn, "drivetrain", hardware.drivetrainAssignment()));
         m.put("startPose", config.startPose);
+        m.put("desktop", opts.desktop);
+        m.put("autosFolder", autosFolder == null ? null : autosFolder.getAbsolutePath());
+        m.put("recentFolders", recentFoldersCopy());
         client.send(gson.toJson(m));
         client.send(gson.toJson(opModesMessage()));
         lastLogSeq = 0;
+    }
+
+    /** The BIOBUZZ layout chosen with --map (a CAD .stl, compiled once and cached, or a compiled .json); null = the layout built into the app. */
+    private ftcsim.map.FieldMap resolveMap(File data) {
+        if (opts.map == null) return null;
+        try {
+            ftcsim.map.FieldMap m = ftcsim.map.FieldMaps.load(opts.map, new File(data, "map-cache"));
+            RobotLog.ii(TAG, "Field map: %s (%d solids, %d hives, %d flowers, %d pieces)", opts.map, m.solids.size(), m.hives.size(), m.flowers.size(), m.pieces.size());
+            return m;
+        } catch (IOException | RuntimeException e) {
+            RobotLog.ee(TAG, e, "Could not load field map %s; using the built-in BIOBUZZ map", opts.map);
+            return null;
+        }
     }
 
     private static int obeliskFrom(Field field) {
@@ -327,7 +549,11 @@ public final class Simulator {
     private Map<String, Object> fieldMessage() {
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("name", world.field.name);
-        f.put("sizeIn", Field.HALF_SIZE_IN * 2);
+        f.put("sizeIn", world.field.halfSizeIn * 2);
+        f.put("halfSizeIn", world.field.halfSizeIn);
+        f.put("tileIn", world.field.tileIn);
+        f.put("wallHeightIn", world.field.wallHeightIn);
+        if (world.field.map != null) f.put("map", ftcsim.map.FieldMaps.renderTree(world.field.map));
         List<Map<String, Object>> zones = new ArrayList<>();
         for (Field.Zone z : world.field.zones) zones.add(Map.of("name", z.name, "minX", z.minX, "minY", z.minY, "maxX", z.maxX, "maxY", z.maxY, "color", z.color));
         f.put("zones", zones);
@@ -350,7 +576,7 @@ public final class Simulator {
         for (Field.AprilTag t : world.field.tags) tags.add(Map.of("id", t.id, "name", t.name, "x", t.x, "y", t.y, "z", t.z, "yawDeg", t.yawDeg, "size", t.sizeIn));
         f.put("tags", tags);
         List<Map<String, Object>> obs = new ArrayList<>();
-        for (Field.Obstacle o : world.field.obstacles) obs.add(Map.of("name", o.name, "minX", o.minX, "minY", o.minY, "maxX", o.maxX, "maxY", o.maxY, "color", o.color));
+        for (Field.Obstacle o : world.field.obstacles) obs.add(Map.of("name", o.name, "minX", o.minX, "minY", o.minY, "minZ", o.minZ, "maxX", o.maxX, "maxY", o.maxY, "height", o.height, "color", o.color));
         f.put("obstacles", obs);
         return f;
     }
@@ -378,9 +604,14 @@ public final class Simulator {
             build.put("diagnostics", diags);
             build.put("loadErrors", b.loadErrors);
         } else if (teamCode == null) {
-            build.put("success", false); build.put("summary", "No team repository configured (use --repo)");
+            build.put("success", false); build.put("summary", "No OpModes loaded: choose a folder of OpModes (--autos <folder>) or a project (--repo <path>)");
         }
         m.put("build", build);
+        TeamCode loaded = teamCode;
+        File folder = autosFolder;
+        m.put("autosFolder", folder == null ? null : folder.getAbsolutePath());
+        m.put("mode", loaded == null ? "none" : loaded.repo().project ? (loaded.repo().folder != null ? "project+folder" : "project") : "folder");
+        m.put("recentFolders", recentFoldersCopy());
         if (teamCode != null) {
             TeamRepo r = teamCode.repo();
             List<String> roots = new ArrayList<>();
@@ -412,8 +643,14 @@ public final class Simulator {
         Map<String, Object> op = new LinkedHashMap<>();
         op.put("state", s.state.name()); op.put("name", s.opModeName); op.put("flavor", s.flavor); op.put("runtime", s.runtime);
         op.put("error", s.error); op.put("warning", s.warning); op.put("globalError", s.globalError);
-        op.put("timerEnabled", matchTimerEnabled);
-        op.put("timerRemaining", s.state == SimOpModeRunner.State.RUNNING && matchTimerEnabled ? Math.max(0, (matchDeadline - System.currentTimeMillis()) / 1000.0) : null);
+        Map<String, Object> g = game == null ? null : game.snapshot();
+        Double timerLeft = null;
+        if (s.state == SimOpModeRunner.State.RUNNING) {
+            if (g != null) timerLeft = periodRemaining(g);
+            else if (matchTimerEnabled) timerLeft = Math.max(0, (matchDeadline - System.currentTimeMillis()) / 1000.0);
+        }
+        op.put("timerEnabled", g != null || matchTimerEnabled);
+        op.put("timerRemaining", timerLeft);
         m.put("opmode", op);
         m.put("telemetry", Map.of("lines", s.telemetry, "time", s.telemetryTime));
         m.put("panels", Map.of("lines", DashboardBridge.panelsTelemetry(), "time", DashboardBridge.panelsTelemetryTime()));
@@ -449,6 +686,10 @@ public final class Simulator {
         m.put("sim", sim);
         m.put("drivetrain", hardware.drivetrainAssignment());
         m.put("codeFrame", hardware.codeFrame());
+        if (g != null) {
+            g.put("match", match.describe());
+            m.put("game", g);
+        }
         return m;
     }
 
@@ -472,7 +713,7 @@ public final class Simulator {
                         web.broadcast(gson.toJson(Map.of("type", "buildStatus", "build", om.get("build"))));
                     }
                 }
-                if (matchTimerEnabled && runner.state() == SimOpModeRunner.State.RUNNING && System.currentTimeMillis() > matchDeadline) {
+                if (game == null && matchTimerEnabled && runner.state() == SimOpModeRunner.State.RUNNING && System.currentTimeMillis() > matchDeadline) {
                     RobotLog.ii(TAG, "Match timer expired; stopping OpMode");
                     new Thread(runner::stop, "ftcsim-timer-stop").start();
                 }

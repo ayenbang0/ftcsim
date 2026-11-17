@@ -63,6 +63,7 @@ public final class WebServer {
     private ServerSocket serverSocket;
     private volatile boolean running;
     private final File overrideDir;
+    private boolean loopbackOnly;
 
     public WebServer(int port, String resourceRoot, File overrideDir, MessageHandler messageHandler) {
         this.port = port; this.resourceRoot = resourceRoot; this.overrideDir = overrideDir; this.messageHandler = messageHandler;
@@ -71,11 +72,13 @@ public final class WebServer {
     public void addApi(String pathPrefix, HttpHandler h) { apiHandlers.put(pathPrefix, h); }
     public List<Client> clients() { return clients; }
     public int port() { return serverSocket == null ? port : serverSocket.getLocalPort(); }
+    /** Accept connections from this computer only (the desktop app); default is every interface so a phone or Driver Station laptop can connect. */
+    public void setLoopbackOnly(boolean loopbackOnly) { this.loopbackOnly = loopbackOnly; }
 
     public void start() throws IOException {
         serverSocket = new ServerSocket();
         serverSocket.setReuseAddress(true);
-        serverSocket.bind(new InetSocketAddress(port));
+        serverSocket.bind(loopbackOnly ? new InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), port) : new InetSocketAddress(port));
         running = true;
         Thread t = new Thread(() -> {
             while (running) {

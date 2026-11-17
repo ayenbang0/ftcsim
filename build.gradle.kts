@@ -29,6 +29,23 @@ fun findRepoDir(): File? {
 }
 
 val repoDir: File? = findRepoDir()
+
+// Folder of OpMode sources to run without a team repo (-Pautos=<folder>, FTCSIM_AUTOS, or "autos" in ftcsim.properties).
+fun findAutosDir(): File? {
+    val candidates = listOf(
+        (project.findProperty("autos") as String?),
+        System.getenv("FTCSIM_AUTOS"),
+        localProps.getProperty("autos")
+    )
+    for (c in candidates) {
+        if (c != null && c.isNotBlank()) {
+            val f = if (File(c).isAbsolute) File(c) else rootProject.file(c)
+            return f.canonicalFile
+        }
+    }
+    return null
+}
+extra["autosDir"] = findAutosDir()
 extra["repoDir"] = repoDir
 
 // Detect the FTC SDK version used by the team repo (defaults to 11.0.0).

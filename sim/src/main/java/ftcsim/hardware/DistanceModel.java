@@ -28,9 +28,9 @@ final class DistanceModel {
         Vec2 origin = new Vec2(p.x, p.y).plus(new Vec2(mountX, mountY).rotated(p.heading));
         double dir = p.heading + mountYaw;
         Vec2 d = new Vec2(Math.cos(dir), Math.sin(dir));
-        double half = Field.HALF_SIZE_IN * Units.INCH;
-        double best = rayToAabb(origin, d, -half, -half, half, half, true);
         Field f = field.get();
+        double half = (f != null ? f.halfSizeIn : Field.DEFAULT_HALF_SIZE_IN) * Units.INCH;
+        double best = rayToAabb(origin, d, -half, -half, half, half, true);
         if (f != null) for (Field.Obstacle o : f.obstacles) {
             best = Math.min(best, rayToAabb(origin, d, o.minX * Units.INCH, o.minY * Units.INCH, o.maxX * Units.INCH, o.maxY * Units.INCH, false));
         }

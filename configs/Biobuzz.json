@@ -14,8 +14,14 @@
   "codeCoordinateFrame": "auto",
   "startPose": {
     "x": 12.0,
-    "y": -63.0,
+    "y": -61.5,
     "headingDeg": 90.0
+  },
+  "game": {
+    "capacity": 4,
+    "hiveTipLoad": 7.0,
+    "intake": { "motors": ["intake"], "direction": 0 },
+    "launcher": { "flywheels": ["shooter"], "feeders": ["feeder"], "pitchDeg": 60, "wheelRadiusIn": 2.0, "efficiency": 0.5 }
   },
   "hardwareLatency": {
     "enabled": true,
@@ -46,6 +52,11 @@
       "name": "Control Hub",
       "address": 173,
       "parent": true
+    },
+    {
+      "name": "Expansion Hub 2",
+      "address": 2,
+      "parent": false
     }
   ],
   "devices": [
@@ -112,6 +123,21 @@
       "hfovDeg": 54.5,
       "vfovDeg": 42,
       "maxRangeIn": 160
+    },
+    {
+      "name": "intake", "type": "DcMotorEx", "hub": "Expansion Hub 2", "port": 0,
+      "params": { "motorType": "goBILDA_312", "inertia": 0.00025, "viscousFriction": 2e-05, "coulombFriction": 0.004 }
+    },
+    {
+      "name": "shooter", "type": "DcMotorEx", "hub": "Expansion Hub 2", "port": 1,
+      "params": { "motorType": "goBILDA_6000", "inertia": 0.00025, "viscousFriction": 2e-05, "coulombFriction": 0.004 }
+    },
+    {
+      "name": "feeder", "type": "Servo", "hub": "Control Hub", "port": 0,
+      "params": { "secondsFullRange": 0.3 }
+    },
+    {
+      "name": "otos", "type": "SparkFunOTOS", "hub": "Control Hub", "port": 0
     }
   ]
 }

@@ -93,13 +93,31 @@ public final class HardwareBus {
         }
     }
 
-    /** Accurate short sleep: park most of it, spin the last fraction of a millisecond. */
+    /**
+     * How far a short park overshoots on this machine: well under a millisecond on Linux and macOS, about
+     * 15 ms on a Windows machine running the default 15.6 ms timer. Measured once; decides how much of a
+     * simulated hub transaction is spent spinning instead of parked.
+     */
+    private static final long PARK_SLACK_NANOS = measureParkSlack();
+
+    private static long measureParkSlack() {
+        long worst = 0;
+        for (int i = 0; i < 4; i++) {
+            long t0 = System.nanoTime();
+            LockSupport.parkNanos(500_000L);
+            worst = Math.max(worst, System.nanoTime() - t0 - 500_000L);
+        }
+        return Math.min(worst, 30_000_000L);
+    }
+
+    /** Accurate short sleep: park most of it when the OS timer is fine enough, always spin the tail. */
     private static void sleepNanos(long nanos) {
+        long margin = Math.max(1_000_000L, PARK_SLACK_NANOS + 500_000L);
         long deadline = System.nanoTime() + nanos;
         long remaining = nanos;
         while (remaining > 0) {
             if (Thread.currentThread().isInterrupted()) return;
-            if (remaining > 1_500_000L) LockSupport.parkNanos(remaining - 1_000_000L);
+            if (remaining > margin + 500_000L) LockSupport.parkNanos(remaining - margin);
             else Thread.onSpinWait();
             remaining = deadline - System.nanoTime();
         }

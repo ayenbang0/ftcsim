@@ -23,6 +23,8 @@ public final class Chassis {
     // friction on the body (N / N m): coulomb + viscous per axis
     public double coulombX = 10, coulombY = 20, coulombTheta = 0.8;
     public double viscousX = 2.0, viscousY = 4.0, viscousTheta = 0.15;
+    /** Robot height, metres: solids whose underside is above it can be driven under (R102: 18 in at the start of a match). */
+    public double height = 18 * Units.INCH;
 
     /** Mecanum order: leftFront, rightFront, leftRear, rightRear. Tank: left then right side lists. */
     public MotorState leftFront, rightFront, leftRear, rightRear;
@@ -149,8 +151,8 @@ public final class Chassis {
     private void resolveCollisions(Field field) {
         double hl = length / 2, hw = width / 2;
         double c = Math.cos(pose.heading), s = Math.sin(pose.heading);
-        double half = Field.HALF_SIZE_IN * Units.INCH;
-        // corners in field frame
+        double half = field.halfSizeIn * Units.INCH;
+        // perimeter walls: push the farthest corner back inside
         double[][] corners = { { hl, hw }, { hl, -hw }, { -hl, hw }, { -hl, -hw } };
         double pushX = 0, pushY = 0;
         for (double[] cr : corners) {
@@ -161,23 +163,30 @@ public final class Chassis {
             if (cy > half) pushY = Math.min(pushY, half - cy);
             if (cy < -half) pushY = Math.max(pushY, -half - cy);
         }
-        // obstacles: treat robot as a circle of radius = half diagonal * 0.85 (rounded corners)
-        double r = Math.hypot(hl, hw) * 0.85;
-        for (Field.Obstacle o : field.obstacles) {
-            double minX = o.minX * Units.INCH, maxX = o.maxX * Units.INCH, minY = o.minY * Units.INCH, maxY = o.maxY * Units.INCH;
-            double qx = Math.max(minX, Math.min(maxX, pose.x + pushX));
-            double qy = Math.max(minY, Math.min(maxY, pose.y + pushY));
-            double dx = pose.x + pushX - qx, dy = pose.y + pushY - qy;
-            double d = Math.hypot(dx, dy);
-            if (d < r) {
-                if (d < 1e-9) { // centre inside: push out along the nearest face
-                    double toMinX = pose.x - minX, toMaxX = maxX - pose.x, toMinY = pose.y - minY, toMaxY = maxY - pose.y;
-                    double m = Math.min(Math.min(toMinX, toMaxX), Math.min(toMinY, toMaxY));
-                    if (m == toMinX) pushX -= toMinX + r; else if (m == toMaxX) pushX += toMaxX + r; else if (m == toMinY) pushY -= toMinY + r; else pushY += toMaxY + r;
-                } else {
-                    pushX += dx / d * (r - d); pushY += dy / d * (r - d);
-                }
+        // solids: separating-axis test of the robot rectangle against each axis-aligned box (field x/y, robot u/v);
+        // the axis of least overlap is the way out. Two passes so a push out of one box can't leave it inside the next.
+        double reach = Math.hypot(hl, hw), ac = Math.abs(c), as = Math.abs(s);
+        double rx = ac * hl + as * hw, ry = as * hl + ac * hw; // half extent of the robot on the field axes
+        for (int pass = 0; pass < 2; pass++) {
+            boolean moved = false;
+            for (Field.Obstacle o : field.obstacles) {
+                if (o.minZ * Units.INCH >= height) continue; // the robot drives underneath
+                double ex = (o.maxX - o.minX) / 2 * Units.INCH, ey = (o.maxY - o.minY) / 2 * Units.INCH;
+                double dx = pose.x + pushX - (o.minX + o.maxX) / 2 * Units.INCH, dy = pose.y + pushY - (o.minY + o.maxY) / 2 * Units.INCH;
+                if (Math.abs(dx) >= ex + reach || Math.abs(dy) >= ey + reach) continue;
+                double du = dx * c + dy * s, dv = -dx * s + dy * c; // robot centre relative to the box, on the robot axes
+                double o1 = rx + ex - Math.abs(dx), o2 = ry + ey - Math.abs(dy);
+                double o3 = hl + ex * ac + ey * as - Math.abs(du), o4 = hw + ex * as + ey * ac - Math.abs(dv);
+                if (o1 <= 0 || o2 <= 0 || o3 <= 0 || o4 <= 0) continue; // a separating axis exists
+                double nx, ny, depth;
+                if (o1 <= o2 && o1 <= o3 && o1 <= o4) { nx = dx >= 0 ? 1 : -1; ny = 0; depth = o1; }
+                else if (o2 <= o3 && o2 <= o4) { nx = 0; ny = dy >= 0 ? 1 : -1; depth = o2; }
+                else if (o3 <= o4) { double sg = du >= 0 ? 1 : -1; nx = c * sg; ny = s * sg; depth = o3; }
+                else { double sg = dv >= 0 ? 1 : -1; nx = -s * sg; ny = c * sg; depth = o4; }
+                pushX += nx * depth; pushY += ny * depth;
+                moved = true;
             }
+            if (!moved) break;
         }
         if (pushX != 0 || pushY != 0) {
             pose = new Pose2(pose.x + pushX, pose.y + pushY, pose.heading);

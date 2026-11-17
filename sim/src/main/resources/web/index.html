@@ -23,25 +23,76 @@
 </header>
 
 <main id="layout">
-  <section id="left" class="panel">
-    <h2>Driver Station</h2>
-    <div class="ds">
-      <select id="opmodeSelect" size="1"></select>
-      <div class="ds-buttons">
-        <button id="initBtn" class="primary">INIT</button>
-        <button id="startBtn" class="go">▶ START</button>
-        <button id="stopBtn" class="stop">■ STOP</button>
+  <section id="left" class="panel scroll">
+    <details id="matchSec" class="sec hidden" open>
+      <summary>Match</summary>
+      <div class="sec-body">
+        <div class="form-grid">
+          <label for="matchAuto">Auto</label><select id="matchAuto" title="Autonomous OpMode for the 30 s AUTO period"></select>
+          <label for="matchTele">TeleOp</label><select id="matchTele" title="TeleOp OpMode for the 120 s TELEOP period"></select>
+        </div>
+        <div class="ds-buttons">
+          <button id="matchRunBtn" class="go" title="Run AUTO, the 8 s transition and TELEOP back to back">▶ Run match</button>
+          <button id="matchAbortBtn" class="stop" title="Stop the running match">■ Abort</button>
+          <button id="matchResetBtn" title="Restage the field and robot, scores to zero">↺ Reset</button>
+        </div>
+        <div class="ds-row"><span class="state-pill" id="matchStep">IDLE</span><span class="hint" id="matchNames"></span></div>
+        <div class="form-grid">
+          <label for="gsAlliance">Alliance</label>
+          <select id="gsAlliance" title="Which alliance the robot plays for; AUTO picks from the start pose"><option value="AUTO">Auto (from start pose)</option><option value="RED">Red</option><option value="BLUE">Blue</option></select>
+          <label for="gsTipLoad" title="Elements needed in a HIVE cell to tip it">Tip load</label>
+          <input id="gsTipLoad" type="number" min="1" max="99" step="1" value="3" title="Elements needed in a HIVE cell to tip it">
+        </div>
+        <label class="chk" title="The scripted human player feeds NECTAR through the LOADING ZONE on its own"><input type="checkbox" id="gsHuman"> Scripted human player</label>
+        <div class="ds-buttons">
+          <button id="humanBtn" title="Human player introduces the next staged NECTAR through the LOADING ZONE">Human: introduce NECTAR</button>
+        </div>
+        <div class="ds-buttons">
+          <button id="dbgIntakeBtn" title="Force the intake on, independent of robot code">Debug intake: off</button>
+          <button id="dbgFireBtn" title="Hold to fire elements, independent of robot code">Fire</button>
+        </div>
+        <div id="scoreTable" class="score-table"></div>
+        <div class="hubhead">Violations <span id="violCount"></span></div>
+        <div id="violations" class="violations"><span class="hint">none</span></div>
       </div>
-      <div class="ds-row">
-        <span class="state-pill" id="statePill">IDLE</span>
-        <span id="runtime" class="mono">0.0 s</span>
-        <label class="chk"><input type="checkbox" id="timerChk"> Match timer</label>
-        <span id="timerRemaining" class="mono"></span>
+    </details>
+
+    <details id="folderSec" class="sec hidden" open>
+      <summary>OpMode folder</summary>
+      <div class="sec-body">
+        <div class="ds-row"><span class="mono ellipsis grow" id="autosPath" title="">no folder</span><span class="pill" id="autosMode" title="Where OpModes are loaded from">none</span></div>
+        <div class="ds-buttons">
+          <button id="autosChooseBtn" title="Choose a folder that contains OpMode sources or compiled classes">Choose folder…</button>
+        </div>
+        <div id="autosPrompt" class="ds-row hidden">
+          <input id="autosPathInput" type="text" class="grow" placeholder="C:\path\to\opmodes" spellcheck="false" title="Absolute path of an OpMode folder on the machine running FTCSim">
+          <button id="autosLoadBtn" class="primary">Load</button>
+          <button id="autosCancelBtn" title="Cancel">✕</button>
+        </div>
+        <select id="autosRecent" title="Recently used folders"></select>
       </div>
-      <button id="restartBtn" class="stop hidden">Restart Robot</button>
-      <pre id="errorBox" class="errorbox hidden"></pre>
-      <div id="warnBox" class="warnbox hidden"></div>
-    </div>
+    </details>
+
+    <details id="dsSec" class="sec" open>
+      <summary>Driver Station</summary>
+      <div class="sec-body ds">
+        <select id="opmodeSelect" size="1"></select>
+        <div class="ds-buttons">
+          <button id="initBtn" class="primary">INIT</button>
+          <button id="startBtn" class="go">▶ START</button>
+          <button id="stopBtn" class="stop">■ STOP</button>
+        </div>
+        <div class="ds-row">
+          <span class="state-pill" id="statePill">IDLE</span>
+          <span id="runtime" class="mono">0.0 s</span>
+          <label class="chk"><input type="checkbox" id="timerChk"> Match timer</label>
+          <span id="timerRemaining" class="mono"></span>
+        </div>
+        <button id="restartBtn" class="stop hidden">Restart Robot</button>
+        <pre id="errorBox" class="errorbox hidden"></pre>
+        <div id="warnBox" class="warnbox hidden"></div>
+      </div>
+    </details>
     <div class="tabs" id="telemetryTabs">
       <button data-tab="ds" class="active">Telemetry</button>
       <button data-tab="panels">Panels</button>
@@ -63,13 +114,41 @@
       <button id="saveStartBtn" title="Use the current pose as the start pose">Save as start</button>
       <button id="resetPoseBtn" title="Move the robot back to the start pose">Reset</button>
     </div>
-    <div class="field-wrap"><canvas id="field" width="800" height="800"></canvas></div>
+    <div id="hudBar" class="hud hidden">
+      <span class="phase-pill" id="hudPhase" title="Match phase">PRE</span>
+      <span class="clock mono" id="hudClock" title="Time left in this period">–:––</span>
+      <span class="chip" id="hudUnlock" title="FLOWERs only accept NECTAR once the unlock countdown ends"></span>
+      <span class="spacer"></span>
+      <span class="score red" id="hudRed" title="Red alliance total · ranking points"><b>RED</b> <span class="n">0</span><i class="rp"></i><span class="badges"></span></span>
+      <span class="score blue" id="hudBlue" title="Blue alliance total · ranking points"><b>BLUE</b> <span class="n">0</span><i class="rp"></i><span class="badges"></span></span>
+      <span class="chip" id="hudHeld" title="Elements held by the robot / capacity">held 0/0</span>
+      <span class="chip viol" id="hudViol" title="Active rule violations"></span>
+    </div>
+    <div class="field-wrap" id="fieldWrap">
+      <div class="stage" id="stage">
+        <canvas id="field" width="800" height="800"></canvas>
+        <div class="stage-ctl" id="viewCtl">
+          <div class="seg" title="Field view">
+            <button id="view2d" class="active">2D</button><button id="view3d">3D</button>
+          </div>
+          <select id="camPreset" class="hidden" title="Camera preset (drag to orbit, wheel to zoom)">
+            <option value="audience">Audience</option><option value="red">Red wall</option><option value="blue">Blue wall</option><option value="top">Top</option><option value="follow">Follow robot</option>
+          </select>
+        </div>
+        <div id="ticker" class="ticker"></div>
+        <div id="kbdCard" class="kbd-card hidden">
+          <div id="kbdLegend" class="kbd-legend hidden"></div>
+          <canvas id="padInd" width="176" height="64"></canvas>
+        </div>
+        <div id="summary" class="summary hidden"></div>
+      </div>
+    </div>
     <div class="field-toolbar bottom">
       <label class="chk"><input type="checkbox" id="trailChk" checked> Trail</label>
       <label class="chk"><input type="checkbox" id="labelsChk" checked> Labels</label>
       <label>View <select id="rotateSelect"><option value="0">audience right (+X →)</option><option value="90">audience top</option><option value="180">audience left</option><option value="270">audience bottom</option></select></label>
       <span id="fieldOptions"></span>
-      <span class="hint">drag robot to move · shift+drag or wheel to rotate</span>
+      <span class="hint" id="fieldHint">drag robot to move · shift+drag or wheel to rotate</span>
     </div>
   </section>
 
