@@ -202,3 +202,16 @@ node tools/ui-test.mjs 8000                               # Playwright smoke tes
   `org.firstinspires.ftc.vision`).
 * `configs/` – robot configurations.
 * `tools/` – development and test scripts.
+
+## BIOBUZZ, folder mode and the Windows app
+
+* **Run OpModes from a plain folder** (no FtcRobotController repo needed): `gradlew run -Pautos=samples/autos`,
+  or `FTCSim.exe --autos <folder>`. The folder holds `@Autonomous` / `@TeleOp` sources; they are compiled in-process.
+  Combine with `--repo <repo>` to use a team repo. `--batch` runs every `@Autonomous` headless and prints scores
+  (`gradlew run -Pautos=samples/autos --args=--batch`).
+* **BIOBUZZ field and rules**: the field comes from the game STL (baked into `sim/src/main/resources/map/biobuzz.json`),
+  match flow AUTO 30 s / transition 8 s / TELEOP 120 s, scoring and violations per manual TU08. See
+  `docs/BIOBUZZ_RULES.md` for what is enforced and what is not.
+* **Windows app**: `build-exe.bat` (or `gradlew :sim:packageExe`) builds `dist/FTCSim/FTCSim.exe` and
+  `dist/FTCSim-windows-x64.zip`. The exe opens an app-mode Edge/Chrome window; `FTCSim.bat` / `FTCSim-cli.bat` are
+  fallbacks if Windows blocks the unsigned exe. Needs a JDK 17+ with jpackage/jlink (`FTCSIM_JDK`).
