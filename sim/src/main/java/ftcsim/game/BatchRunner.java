@@ -149,7 +149,8 @@ public final class BatchRunner {
             r.error = runner.error() != null ? runner.error() : "the OpMode did not start";
         } else if (game.phase() == BiobuzzGame.Phase.AUTO) {
             r.crashed = true;
-            r.error = "the AUTO period did not end (is the simulation paused?)";
+            r.error = String.format("the AUTO period did not end (sim time %.1f s, %.0f steps/s, paused=%b)",
+                    sim.world().simTime(), sim.world().stepRate(), sim.world().isPaused());
         } else {
             // the transition: elements still in the air count, the robot has to stand still (G403)
             waitFor(() -> game.phase() != BiobuzzGame.Phase.TRANSITION, TRANSITION_TIMEOUT_MS);
